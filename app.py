@@ -1,10 +1,16 @@
 from datetime import date, time
 
 import streamlit as st
+from dotenv import load_dotenv
 
-from pawpal_system import Owner, Pet, Scheduler, Task, format_time
+from ai_suggester import LOG_FILE, MAX_NAME_LENGTH, setup_logging, suggest_tasks
+from llm_client import MockClient, get_client
+from pawpal_system import CATEGORIES, Owner, Pet, Scheduler, Task, format_time
 
 st.set_page_config(page_title="PawPal+", page_icon="🐾", layout="centered")
+
+load_dotenv()
+setup_logging()
 
 st.title("🐾 PawPal+")
 
@@ -32,8 +38,6 @@ with st.expander("How it works"):
 
 st.divider()
 
-CATEGORIES = ["walk", "feeding", "meds", "enrichment", "grooming", "cleaning", "general"]
-
 # Keep one Owner across Streamlit reruns so added pets and tasks aren't lost.
 if "owner" not in st.session_state:
     st.session_state.owner = Owner(name="Jordan")
@@ -58,7 +62,7 @@ st.subheader("Add a Pet")
 with st.form("add_pet", clear_on_submit=True):
     col1, col2, col3 = st.columns(3)
     with col1:
-        pet_name = st.text_input("Pet name")
+        pet_name = st.text_input("Pet name", max_chars=MAX_NAME_LENGTH)
     with col2:
         species = st.selectbox("Species", ["dog", "cat", "other"])
     with col3:
@@ -74,6 +78,100 @@ if owner.pets:
     st.caption("Pets: " + ", ".join(f"{pet.name} ({pet.species})" for pet in owner.pets))
 else:
     st.info("No pets yet. Add one above.")
+
+st.subheader("✨ AI Task Suggestions")
+st.caption(
+    "Pick a pet and PawPal+ looks up care notes for its species and age, then asks the AI to "
+    "suggest tasks based on those notes. Review the suggestions before adding them."
+)
+st.warning(
+    "⚠️ Suggestions are general care guidance, not veterinary advice. For medications, health "
+    "problems, or anything your vet has told you, follow your vet's instructions.",
+    icon=None,
+)
+if owner.pets:
+    client = get_client()
+    if isinstance(client, MockClient):
+        st.info("Offline mode: no GEMINI_API_KEY found, so default tasks will be suggested. See README for setup.")
+
+    ai_pet_index = st.selectbox(
+        "Suggest tasks for",
+        range(len(owner.pets)),
+        format_func=lambda i: f"{owner.pets[i].name} ({owner.pets[i].species}, age {owner.pets[i].age})",
+        key="ai_pet_index",
+    )
+    if "ai_flash" in st.session_state:
+        st.success(st.session_state.pop("ai_flash"))
+    if st.button("Suggest tasks"):
+        with st.spinner("Retrieving care notes and asking the AI..."):
+            st.session_state.ai_result = suggest_tasks(owner.pets[ai_pet_index], owner, client)
+            st.session_state.ai_result_pet = ai_pet_index
+
+    result = st.session_state.get("ai_result")
+    if result is not None and st.session_state.get("ai_result_pet") == ai_pet_index:
+        ai_pet = owner.pets[ai_pet_index]
+        if result.used_fallback:
+            st.warning("No valid AI suggestions, so these are default tasks for this species.")
+        else:
+            st.success(f"{len(result.suggestions)} suggestions for {ai_pet.name}, based on the care notes below.")
+
+        edited = st.data_editor(
+            [
+                {
+                    "Accept": True,
+                    "Task": s.task.description,
+                    "Minutes": s.task.duration_minutes,
+                    "Priority": s.task.priority,
+                    "Category": s.task.category,
+                    "Frequency": s.task.frequency,
+                    "Pinned at": format_time(s.task.preferred_start) if s.task.preferred_start is not None else "-",
+                    "Source": s.source,
+                    "Why": s.reason,
+                }
+                for s in result.suggestions
+            ],
+            column_config={
+                "Accept": st.column_config.CheckboxColumn(),
+                "Minutes": st.column_config.NumberColumn(min_value=1, max_value=240, step=1),
+                "Priority": st.column_config.SelectboxColumn(options=["low", "medium", "high"]),
+            },
+            disabled=["Task", "Category", "Frequency", "Pinned at", "Source", "Why"],
+            hide_index=True,
+            key=f"ai_editor_{id(result)}",
+        )
+
+        if st.button("Add accepted tasks"):
+            added = 0
+            for suggestion, row in zip(result.suggestions, edited):
+                if row["Accept"]:
+                    suggestion.task.duration_minutes = int(row["Minutes"])
+                    suggestion.task.priority = row["Priority"]
+                    ai_pet.add_task(suggestion.task)
+                    added += 1
+            st.session_state.ai_result = None
+            st.session_state.ai_flash = f"Added {added} AI-suggested task(s) for {ai_pet.name}."
+            st.rerun()
+
+        with st.expander("Retrieved care notes (what the AI was given)"):
+            if result.notes:
+                for name, text in result.notes.items():
+                    st.markdown(f"**{name}**")
+                    st.text(text)
+            else:
+                st.write("No notes found.")
+        if result.rejected:
+            with st.expander(f"Rejected by validator ({len(result.rejected)})"):
+                for reason in result.rejected:
+                    st.write(f"- {reason}")
+else:
+    st.caption("Add a pet first, then PawPal+ can suggest tasks for it.")
+
+with st.expander("AI activity log"):
+    try:
+        lines = LOG_FILE.read_text(encoding="utf-8").splitlines()[-30:]
+        st.text("\n".join(lines) or "No activity yet.")
+    except FileNotFoundError:
+        st.text("No activity yet.")
 
 st.subheader("Schedule a Task")
 if owner.pets:

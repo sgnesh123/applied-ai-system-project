@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import date
 
 PRIORITY_RANK = {"low": 1, "medium": 2, "high": 3}
+CATEGORIES = ["walk", "feeding", "meds", "enrichment", "grooming", "cleaning", "general"]
 
 
 def to_minutes(hhmm: str) -> int:

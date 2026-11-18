@@ -1,0 +1,45 @@
+%% PawPal+ AI Task Suggester: system diagram
+flowchart TD
+    %% ---------- Input ----------
+    U(["👤 Owner (Streamlit UI)"]) -->|"pet info + minutes available"| R
+
+    %% ---------- Process ----------
+    subgraph AI["AI Task Suggester"]
+        KB[("Care notes<br/>knowledge/*.md")]
+        R["Retriever<br/>match notes by species + age"]
+        P["Prompt builder<br/>pet info + retrieved notes"]
+        LLM["LLM client<br/>Gemini / MockClient"]
+        V{"Validator<br/>(guardrail)<br/>valid JSON & fields?"}
+        F["Fallback<br/>default tasks for species"]
+
+        KB --> R
+        R -->|"relevant notes"| P
+        P --> LLM
+        LLM -->|"JSON task list + sources"| V
+        V -->|"no / API error"| F
+    end
+
+    V -->|"yes"| H
+    F --> H
+
+    %% ---------- Human check ----------
+    H{"👤 Owner reviews<br/>suggested tasks + sources"}
+    H -->|"reject / edit"| U
+    H -->|"accept"| S
+
+    %% ---------- Output ----------
+    S["Scheduler<br/>generate_plan + detect_conflicts"]
+    S --> O(["📅 Daily plan + explanation"])
+
+    %% ---------- Logging & testing ----------
+    LOG[["Logger<br/>pawpal_ai.log"]]
+    R -.-> LOG
+    LLM -.-> LOG
+    V -.-> LOG
+    F -.-> LOG
+
+    T[["🧪 pytest<br/>mocked LLM: retriever, validator,<br/>fallback, scheduler"]]
+    T -.->|"tests"| R
+    T -.->|"tests"| V
+    T -.->|"tests"| F
+    T -.->|"tests"| S
